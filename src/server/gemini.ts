@@ -19,6 +19,45 @@ const MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 
 console.log(`[Gemini] Initialized with model: ${MODEL_NAME}`);
 
+async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3, delays = [2000, 4000, 8000]): Promise<T> {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await fn();
+    } catch (error: any) {
+      attempt++;
+      
+      const errStr = String(error?.message || error || '').toUpperCase();
+      const status = error?.status || error?.statusCode || error?.status_code || error?.code;
+      
+      const is503 = 
+        status === 503 || 
+        status === '503' ||
+        errStr.includes('503') ||
+        errStr.includes('UNAVAILABLE') ||
+        errStr.includes('SERVICE_UNAVAILABLE') ||
+        errStr.includes('OVERLOADED') ||
+        errStr.includes('RESOURCE_EXHAUSTED') ||
+        errStr.includes('RATE_LIMIT') ||
+        errStr.includes('BUSY');
+
+      if (is503 && attempt <= maxRetries) {
+        const delay = delays[attempt - 1] || 2000;
+        console.warn(`[Gemini Retry] Attempt ${attempt} failed with busy/503/UNAVAILABLE status. Retrying in ${delay}ms... Error: ${error?.message || error}`);
+        console.warn("The AI analysis service is temporarily busy. Retrying...");
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        continue;
+      }
+
+      if (is503) {
+        throw new Error("The AI analysis service is temporarily busy. Retrying...");
+      }
+      
+      throw error;
+    }
+  }
+}
+
 export async function analyzeReport(
   fileBuffer: Buffer,
   mimeType: string,
@@ -156,15 +195,17 @@ Strict JSON Output format:
   }
 
   try {
-    const response = await ai.models.generateContent({
-      model: MODEL_NAME,
-      contents: contents,
-      config: {
-        systemInstruction: systemInstruction,
-        responseMimeType: 'application/json',
-        temperature: 0.2,
-      },
-    });
+    const response = await withRetry(() =>
+      ai.models.generateContent({
+        model: MODEL_NAME,
+        contents: contents,
+        config: {
+          systemInstruction: systemInstruction,
+          responseMimeType: 'application/json',
+          temperature: 0.2,
+        },
+      })
+    );
 
     const textOutput = response.text;
     if (!textOutput) {
@@ -235,16 +276,15 @@ ${reportContext || 'No parsed reports uploaded yet.'}
     // Seed the conversation history if present
     // Let's execute standard messages. In @google/genai, we can send messages sequentially
     // To feed the history, let's feed them or build contents
-    let lastResponse;
     if (history && history.length > 0) {
       // Send the history items sequentially to build the state
       for (const msg of history) {
         // Just send to build state in local chat session
-        await chat.sendMessage({ message: msg.message });
+        await withRetry(() => chat.sendMessage({ message: msg.message }));
       }
     }
 
-    const response = await chat.sendMessage({ message: currentMessage });
+    const response = await withRetry(() => chat.sendMessage({ message: currentMessage }));
     return response.text || 'I apologize, I am unable to generate a response at this moment.';
   } catch (error) {
     console.error('[Gemini Chat] Error: ', error);
