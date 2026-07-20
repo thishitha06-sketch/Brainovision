@@ -1,0 +1,6 @@
+{
+  "name": "Nirva Health",
+  "description": "AI Medical Report Analyzer & Health Guide",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
